@@ -1,0 +1,7 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements-fieldy.txt ./
+RUN pip install --no-cache-dir -r requirements-fieldy.txt
+COPY fieldy-integration-worker.py fieldy-webhook-server.py ./
+EXPOSE 8003
+CMD ["python3", "-m", "uvicorn", "fieldy_webhook_server:app", "--host", "0.0.0.0", "--port", "8003"]

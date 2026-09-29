@@ -1,0 +1,352 @@
+from datetime import datetime
+import io
+import re
+from typing import Any, Dict, List, Optional
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth import assert_job_in_org, get_auth_context
+from app.db import get_session
+from app.schemas import AuthContext
+from app.services.classify import classify_system
+from app.services.decoders import decode_serial_date
+from app.services.devices_service import list_devices_for_job
+from app.services.jobs_service import get_job_by_id
+
+router = APIRouter(prefix="/jobs", tags=["Export"])
+
+GROUP_LABEL = {"hvac": "HVAC", "cold": "Cold Storage", "other": "Other"}
+GROUP_RANK = {"hvac": 0, "cold": 1, "other": 2}
+
+
+def calc_age(mfg_year: Optional[int], mfg_date: Optional[str], serial: Optional[str], mfg: Optional[str]) -> str:
+    """Calculates equipment age from manufacture year or serial number."""
+    current_year = datetime.now().year
+    if mfg_year and 1950 <= mfg_year <= current_year:
+        return str(current_year - mfg_year)
+
+    decoded = decode_serial_date(serial or "", mfg)
+    if decoded and 1950 <= decoded <= current_year:
+        return str(current_year - decoded)
+
+    if mfg_date:
+        m = re.search(r"\b(19[8-9]\d|20[0-3]\d)\b", mfg_date)
+        if m:
+            yr = int(m.group(1))
+            if 1950 <= yr <= current_year:
+                return str(current_year - yr)
+
+    return ""
+
+
+def csv_cell(val: Any) -> str:
+    """Formats cell conforming to RFC-4180 with flattened newlines."""
+    if val is None:
+        return ""
+    s = str(val)
+    s = re.sub(r"\s*[\r\n]+\s*", "; ", s)
+    s = re.sub(r"[ \t]{2,}", " ", s).strip()
+    if '"' in s or "," in s:
+        escaped = s.replace('"', '""')
+        return f'"{escaped}"'
+    return s
+
+
+def build_equipment_csv(devices: List[Any]) -> str:
+    """Generates the standard 27-column Site Hunter equipment inventory CSV."""
+    equipment_columns = [
+        ("Name", lambda d, c: d.device_name or d.name),
+        ("Type", lambda d, c: c.get("system")),
+        ("Category", lambda d, c: GROUP_LABEL.get(c.get("group"), c.get("group"))),
+        ("Qty", lambda d, c: d.quantity or 1),
+        ("Manufacturer", lambda d, c: d.manufacturer),
+        ("Model", lambda d, c: d.model_number),
+        ("Serial", lambda d, c: d.serial_number),
+        ("Age (yrs)", lambda d, c: calc_age(d.mfg_year, d.mfg_date, d.serial_number, d.manufacturer)),
+        ("Mfg Date", lambda d, c: d.mfg_date or (str(d.mfg_year) if d.mfg_year else "")),
+        ("Tonnage", lambda d, c: d.tonnage),
+        ("BTU", lambda d, c: d.btu),
+        ("Voltage", lambda d, c: d.voltage),
+        ("Compressor PH", lambda d, c: d.compressor_ph),
+        ("Fan PH", lambda d, c: d.fan_ph),
+        ("Refrigerant", lambda d, c: d.refrigerant_type),
+        ("MCA", lambda d, c: d.mca),
+        ("MOCP", lambda d, c: d.mocp),
+        ("Compressor RLA", lambda d, c: d.compressor_rla),
+        ("Compressor LRA", lambda d, c: d.compressor_lra),
+        ("Fan RLA", lambda d, c: d.fan_rla),
+        ("Fan Count", lambda d, c: d.fan_count),
+        ("Evaporator Count", lambda d, c: d.evaporator_count),
+        ("SEER", lambda d, c: d.seer),
+        ("EER", lambda d, c: d.eer),
+        ("IPLV", lambda d, c: d.iplv),
+        ("AHRI #", lambda d, c: d.ahri_number),
+        ("Notes", lambda d, c: d.notes),
+    ]
+
+    decorated = []
+    for d in devices:
+        c = classify_system({
+            "category": d.category,
+            "subcategory": d.subcategory,
+            "equipment_type": d.equipment_type,
+            "device_name": d.device_name,
+            "name": d.name,
+            "model_number": d.model_number,
+            "manufacturer": d.manufacturer,
+        })
+        decorated.append((d, c))
+
+    decorated.sort(
+        key=lambda item: (
+            GROUP_RANK.get(item[1].get("group"), 9),
+            str(item[1].get("system") or ""),
+            str(item[0].manufacturer or ""),
+        )
+    )
+
+    header = ",".join(col[0] for col in equipment_columns)
+    lines = [header]
+
+    for d, c in decorated:
+        row = [csv_cell(extractor(d, c)) for _, extractor in equipment_columns]
+        lines.append(",".join(row))
+
+    return "\r\n".join(lines)
+
+
+@router.get("/{job_id}/export/equipment.csv")
+async def export_equipment_csv(
+    job_id: uuid.UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+):
+    job = await get_job_by_id(session, job_id, auth.org_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    devices = await list_devices_for_job(session, job_id, auth.org_id)
+    csv_data = build_equipment_csv(devices)
+
+    safe_name = re.sub(r"[^a-zA-Z0-9\s\-_]", "", job.client_name or job.job_number or str(job_id))
+    safe_name = re.sub(r"\s+", "_", safe_name.strip())
+    filename = f"{safe_name}_Equipment_Inventory.csv"
+
+    return Response(
+        content=csv_data,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def build_equipment_excel(devices: List[Any], sheet_name: str = "Equipment Inventory") -> bytes:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet_name[:31]
+
+    equipment_columns = [
+        ("Name", lambda d, c: getattr(d, "device_name", None) or getattr(d, "name", None) or (d.get("name") if isinstance(d, dict) else "")),
+        ("Type", lambda d, c: c.get("system")),
+        ("Category", lambda d, c: GROUP_LABEL.get(c.get("group"), c.get("group"))),
+        ("Qty", lambda d, c: getattr(d, "quantity", 1) or 1),
+        ("Manufacturer", lambda d, c: getattr(d, "manufacturer", None) or (d.get("manufacturer") if isinstance(d, dict) else "")),
+        ("Model", lambda d, c: getattr(d, "model_number", None) or (d.get("model_number") if isinstance(d, dict) else "")),
+        ("Serial", lambda d, c: getattr(d, "serial_number", None) or (d.get("serial_number") if isinstance(d, dict) else "")),
+        ("Age (yrs)", lambda d, c: calc_age(getattr(d, "mfg_year", None), getattr(d, "mfg_date", None), getattr(d, "serial_number", None), getattr(d, "manufacturer", None))),
+        ("Mfg Date", lambda d, c: getattr(d, "mfg_date", None) or (str(getattr(d, "mfg_year", "")) if getattr(d, "mfg_year", None) else "")),
+        ("Tonnage", lambda d, c: getattr(d, "tonnage", None) or (d.get("tonnage") if isinstance(d, dict) else "")),
+        ("BTU", lambda d, c: getattr(d, "btu", None) or ""),
+        ("Voltage", lambda d, c: getattr(d, "voltage", None) or (d.get("voltage") if isinstance(d, dict) else "")),
+        ("Compressor PH", lambda d, c: getattr(d, "compressor_ph", None) or ""),
+        ("Fan PH", lambda d, c: getattr(d, "fan_ph", None) or ""),
+        ("Refrigerant", lambda d, c: getattr(d, "refrigerant_type", None) or (d.get("refrigerant") if isinstance(d, dict) else "")),
+        ("MCA", lambda d, c: getattr(d, "mca", None) or ""),
+        ("MOCP", lambda d, c: getattr(d, "mocp", None) or ""),
+        ("Compressor RLA", lambda d, c: getattr(d, "compressor_rla", None) or ""),
+        ("Compressor LRA", lambda d, c: getattr(d, "compressor_lra", None) or ""),
+        ("Fan RLA", lambda d, c: getattr(d, "fan_rla", None) or ""),
+        ("Fan Count", lambda d, c: getattr(d, "fan_count", None) or ""),
+        ("Evaporator Count", lambda d, c: getattr(d, "evaporator_count", None) or ""),
+        ("SEER", lambda d, c: getattr(d, "seer", None) or ""),
+        ("EER", lambda d, c: getattr(d, "eer", None) or ""),
+        ("IPLV", lambda d, c: getattr(d, "iplv", None) or ""),
+        ("AHRI #", lambda d, c: getattr(d, "ahri_number", None) or ""),
+        ("Notes", lambda d, c: getattr(d, "notes", None) or ""),
+    ]
+
+    headers = [col[0] for col in equipment_columns]
+    ws.append(headers)
+
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1A2332", end_color="1A2332", fill_type="solid")
+
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    decorated = []
+    for d in devices:
+        c = classify_system({
+            "category": getattr(d, "category", None) or (d.get("category") if isinstance(d, dict) else None),
+            "subcategory": getattr(d, "subcategory", None) or (d.get("subcategory") if isinstance(d, dict) else None),
+            "equipment_type": getattr(d, "equipment_type", None) or (d.get("equipment_type") if isinstance(d, dict) else None),
+            "device_name": getattr(d, "device_name", None) or (d.get("device_name") if isinstance(d, dict) else None),
+            "name": getattr(d, "name", None) or (d.get("name") if isinstance(d, dict) else None),
+            "model_number": getattr(d, "model_number", None) or (d.get("model_number") if isinstance(d, dict) else None),
+            "manufacturer": getattr(d, "manufacturer", None) or (d.get("manufacturer") if isinstance(d, dict) else None),
+        })
+        decorated.append((d, c))
+
+    decorated.sort(
+        key=lambda item: (
+            GROUP_RANK.get(item[1].get("group"), 9),
+            str(item[1].get("system") or ""),
+            str(getattr(item[0], "manufacturer", "") or ""),
+        )
+    )
+
+    for d, c in decorated:
+        row_vals = [extractor(d, c) for _, extractor in equipment_columns]
+        ws.append([v if v is not None else "" for v in row_vals])
+
+    for col in ws.columns:
+        col_letter = get_column_letter(col[0].column)
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@router.get("/{job_id}/export/excel")
+async def export_submission_excel(
+    job_id: uuid.UUID,
+    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = Depends(get_session),
+):
+    job = await get_job_by_id(session, job_id, auth.org_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    devices = await list_devices_for_job(session, job_id, auth.org_id)
+    safe_name = re.sub(r"[^a-zA-Z0-9\s\-_]", "", job.client_name or job.job_number or str(job_id))
+    safe_name = re.sub(r"\s+", "_", safe_name.strip()) or "Site_Hunter_Export"
+    filename = f"{safe_name}_Project_Submission_Form.xlsx"
+
+    excel_bytes = build_equipment_excel(devices, sheet_name=safe_name[:31])
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
+async def handle_export_excel(job_id_or_gid: str, request: Optional[Any] = None) -> Response:
+    from app.db import async_session_factory as AsyncSessionLocal
+    from app.db_models import Job, Device
+    from sqlalchemy import select, or_
+    from sqlalchemy.orm import selectinload
+
+    job = None
+    devices = []
+    async with AsyncSessionLocal() as session:
+        try:
+            job_uuid = uuid.UUID(job_id_or_gid)
+            res = await session.execute(
+                select(Job).where(Job.id == job_uuid).options(selectinload(Job.devices))
+            )
+            job = res.scalars().first()
+            if job:
+                devices = list(job.devices)
+        except (ValueError, TypeError):
+            pass
+
+        if not job:
+            res = await session.execute(
+                select(Job).where(
+                    or_(
+                        Job.asana_project_gid == str(job_id_or_gid),
+                        Job.job_number == str(job_id_or_gid)
+                    )
+                ).options(selectinload(Job.devices))
+            )
+            job = res.scalars().first()
+            if job:
+                devices = list(job.devices)
+
+    client_name = job.client_name if job else f"Project_{job_id_or_gid}"
+    safe_name = re.sub(r"[^a-zA-Z0-9\s\-_]", "", client_name)
+    safe_name = re.sub(r"\s+", "_", safe_name.strip()) or "Site_Hunter_Export"
+    filename = f"{safe_name}_Project_Submission_Form.xlsx"
+
+    excel_bytes = build_equipment_excel(devices, sheet_name=safe_name[:31])
+
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+
+
+async def handle_export_csv(job_id_or_gid: str, request: Optional[Any] = None) -> Response:
+    from app.db import async_session_factory as AsyncSessionLocal
+    from app.db_models import Job, Device
+    from sqlalchemy import select, or_
+    from sqlalchemy.orm import selectinload
+
+    job = None
+    devices = []
+    async with AsyncSessionLocal() as session:
+        try:
+            job_uuid = uuid.UUID(job_id_or_gid)
+            res = await session.execute(
+                select(Job).where(Job.id == job_uuid).options(selectinload(Job.devices))
+            )
+            job = res.scalars().first()
+            if job:
+                devices = list(job.devices)
+        except (ValueError, TypeError):
+            pass
+
+        if not job:
+            res = await session.execute(
+                select(Job).where(
+                    or_(
+                        Job.asana_project_gid == str(job_id_or_gid),
+                        Job.job_number == str(job_id_or_gid)
+                    )
+                ).options(selectinload(Job.devices))
+            )
+            job = res.scalars().first()
+            if job:
+                devices = list(job.devices)
+
+    client_name = job.client_name if job else f"Project_{job_id_or_gid}"
+    safe_name = re.sub(r"[^a-zA-Z0-9\s\-_]", "", client_name)
+    safe_name = re.sub(r"\s+", "_", safe_name.strip()) or "Site_Hunter_Export"
+    filename = f"{safe_name}_Equipment_Inventory.csv"
+
+    csv_data = build_equipment_csv(devices)
+
+    return Response(
+        content=csv_data,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full-bleed dark background — OS applies shape mask -->
+  <rect width="512" height="512" fill="#0F1419"/>
+  <!-- Content fits within 80% safe zone (x/y: 51–461) -->
+  <rect x="80"  y="60" width="40" height="392" rx="6" fill="#E8E8E8"/>
+  <rect x="148" y="60" width="40" height="330" rx="6" fill="#E8E8E8"/>
+  <rect x="216" y="60" width="40" height="260" rx="6" fill="#E8E8E8"/>
+  <rect x="284" y="60" width="40" height="260" rx="6" fill="#E8E8E8"/>
+  <rect x="352" y="60" width="40" height="330" rx="6" fill="#E8E8E8"/>
+  <rect x="420" y="60" width="40" height="392" rx="6" fill="#E8E8E8"/>
+  <path d="M148,320 L256,455 L412,320 L384,320 L256,415 L176,320 Z" fill="#67986A"/>
+</svg>
