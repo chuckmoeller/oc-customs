@@ -1,40 +1,27 @@
 import os
-from sqlalchemy import Column, String, DateTime, JSON, create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+import json
 from datetime import datetime
-import sqlite3
 
-# Use SQLite for Cloud Run (no external DB needed)
 DB_PATH = os.getenv("DB_PATH", "/tmp/automation_hub.db")
-DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+# Simple in-memory workflow storage (SQLite for Cloud Run without async complexity)
+workflows_db = {}
 
-class Workflow(Base):
-    __tablename__ = "workflows"
-
-    workflow_id = Column(String, primary_key=True)
-    workflow_name = Column(String, nullable=False)
-    status = Column(String, default="pending")
-    context = Column(JSON, nullable=True)
-    results = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    completed_at = Column(DateTime, nullable=True)
-
-def init_db():
-    Base.metadata.create_all(bind=engine)
+class Workflow:
+    def __init__(self, workflow_id, workflow_name, status, context, results, created_at, completed_at):
+        self.workflow_id = workflow_id
+        self.workflow_name = workflow_name
+        self.status = status
+        self.context = context
+        self.results = results
+        self.created_at = created_at
+        self.completed_at = completed_at
 
 async def get_db_pool():
-    return engine
+    return workflows_db
+
+def init_db():
+    pass
 
 async def get_session():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# Initialize DB on import
-init_db()
+    return workflows_db
