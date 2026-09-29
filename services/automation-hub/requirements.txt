@@ -8,3 +8,4 @@ pydantic==2.5.0
 python-dotenv==1.0.0
 redis==5.0.1
 anthropic
+google-cloud-secret-manager

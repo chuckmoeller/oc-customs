@@ -8,6 +8,11 @@ from email.mime.multipart import MIMEMultipart
 import aiohttp
 from anthropic import AsyncAnthropic
 
+from secrets import (
+    get_smtp_user, get_smtp_password, get_slack_token,
+    get_asana_pat, get_anthropic_key, get_google_api_key
+)
+
 logger = logging.getLogger(__name__)
 
 class ActionExecutor:
@@ -15,12 +20,6 @@ class ActionExecutor:
         self.redis = redis_client
         self.smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
         self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
-        self.smtp_user = os.getenv("SMTP_USER")
-        self.smtp_password = os.getenv("SMTP_PASSWORD")
-        self.slack_token = os.getenv("SLACK_BOT_TOKEN")
-        self.asana_token = os.getenv("ASANA_PAT")
-        self.claude_api_key = os.getenv("ANTHROPIC_API_KEY")
-        self.gemini_api_key = os.getenv("GOOGLE_API_KEY")
 
     async def execute(self, action, context: Dict[str, Any]) -> Dict[str, Any]:
         from models import ActionType
@@ -45,15 +44,18 @@ class ActionExecutor:
             raise ValueError("Missing recipients, subject, or body")
 
         try:
+            smtp_user = get_smtp_user()
+            smtp_password = get_smtp_password()
+
             msg = MIMEMultipart()
-            msg["From"] = self.smtp_user
+            msg["From"] = smtp_user
             msg["To"] = ", ".join(recipients)
             msg["Subject"] = subject
 
             msg.attach(MIMEText(body, "plain"))
 
             async with aiosmtplib.SMTP(hostname=self.smtp_host, port=self.smtp_port) as smtp:
-                await smtp.login(self.smtp_user, self.smtp_password)
+                await smtp.login(smtp_user, smtp_password)
                 await smtp.send_message(msg)
 
             logger.info(f"Email sent to {recipients}")
@@ -72,8 +74,10 @@ class ActionExecutor:
             raise ValueError("Missing channel or message")
 
         try:
+            slack_token = get_slack_token()
+
             async with aiohttp.ClientSession() as session:
-                headers = {"Authorization": f"Bearer {self.slack_token}"}
+                headers = {"Authorization": f"Bearer {slack_token}"}
                 payload = {
                     "channel": channel,
                     "text": message
@@ -107,9 +111,11 @@ class ActionExecutor:
             raise ValueError("Missing project_gid or title")
 
         try:
+            asana_token = get_asana_pat()
+
             async with aiohttp.ClientSession() as session:
                 headers = {
-                    "Authorization": f"Bearer {self.asana_token}",
+                    "Authorization": f"Bearer {asana_token}",
                     "Content-Type": "application/json"
                 }
                 payload = {
@@ -148,7 +154,7 @@ class ActionExecutor:
             raise ValueError("Missing enrichment prompt")
 
         try:
-            if use_gemini and self.gemini_api_key:
+            if use_gemini:
                 return await self._enrich_with_gemini(prompt, context)
             else:
                 return await self._enrich_with_claude(prompt, context)
@@ -158,7 +164,8 @@ class ActionExecutor:
             raise
 
     async def _enrich_with_claude(self, prompt: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        client = AsyncAnthropic(api_key=self.claude_api_key)
+        api_key = get_anthropic_key()
+        client = AsyncAnthropic(api_key=api_key)
 
         full_prompt = f"{prompt}\n\nContext:\n{context}"
 
