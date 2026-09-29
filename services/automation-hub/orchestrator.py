@@ -1,3 +1,5 @@
+MAX_RETRIES = 3
+
 import json
 import logging
 import asyncio
@@ -74,7 +76,7 @@ class Orchestrator:
                         "workflow_id": workflow_id,
                         "action": action.dict(),
                         "error": str(e),
-                        "retry_count": action.retry_count + 1
+                        "retry_count": 1
                     })
 
                     results.append({
@@ -182,7 +184,7 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"DLQ retry failed: {e}")
             retry_count = int(item_data.get(b"retry_count", b"0")) + 1
-            if retry_count < 3:
+            if retry_count < MAX_RETRIES:
                 await self._park_in_dlq(dlq_item_id, {
                     "workflow_id": item_data.get(b"workflow_id", b"").decode(),
                     "action": json.loads(item_data.get(b"action", b"{}")),
