@@ -1,15 +1,16 @@
 import os
 import logging
+import json
 from typing import Dict, Any
-import aiosmtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import base64
 
 import aiohttp
 from anthropic import AsyncAnthropic
 
 from secrets import (
-    get_smtp_user, get_smtp_password, get_slack_token,
+    get_smtp_user, get_ms_graph_token, get_slack_token,
     get_asana_pat, get_anthropic_key, get_google_api_key
 )
 
@@ -18,8 +19,6 @@ logger = logging.getLogger(__name__)
 class ActionExecutor:
     def __init__(self, redis_client):
         self.redis = redis_client
-        self.smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
 
     async def execute(self, action, context: Dict[str, Any]) -> Dict[str, Any]:
         from models import ActionType
@@ -44,22 +43,44 @@ class ActionExecutor:
             raise ValueError("Missing recipients, subject, or body")
 
         try:
-            smtp_user = get_smtp_user()
-            smtp_password = get_smtp_password()
+            ms_graph_token = get_ms_graph_token()
+            sender = get_smtp_user()
 
-            msg = MIMEMultipart()
-            msg["From"] = smtp_user
-            msg["To"] = ", ".join(recipients)
-            msg["Subject"] = subject
+            # Build Microsoft Graph email message
+            message = {
+                "message": {
+                    "subject": subject,
+                    "body": {
+                        "contentType": "text",
+                        "content": body
+                    },
+                    "toRecipients": [
+                        {"emailAddress": {"address": recipient}} for recipient in recipients
+                    ],
+                    "from": {
+                        "emailAddress": {"address": sender}
+                    }
+                },
+                "saveToSentItems": True
+            }
 
-            msg.attach(MIMEText(body, "plain"))
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    "Authorization": f"Bearer {ms_graph_token}",
+                    "Content-Type": "application/json"
+                }
 
-            async with aiosmtplib.SMTP(hostname=self.smtp_host, port=self.smtp_port) as smtp:
-                await smtp.login(smtp_user, smtp_password)
-                await smtp.send_message(msg)
+                async with session.post(
+                    "https://graph.microsoft.com/v1.0/me/sendMail",
+                    json=message,
+                    headers=headers
+                ) as resp:
+                    if resp.status not in (200, 202):
+                        error_text = await resp.text()
+                        raise Exception(f"MS Graph error {resp.status}: {error_text}")
 
-            logger.info(f"Email sent to {recipients}")
-            return {"status": "sent", "recipients": recipients}
+            logger.info(f"Email sent to {recipients} via MS Graph")
+            return {"status": "sent", "recipients": recipients, "method": "msgraph"}
 
         except Exception as e:
             logger.error(f"Email send failed: {e}")
