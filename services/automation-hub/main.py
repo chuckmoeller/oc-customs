@@ -1,22 +1,51 @@
 import os
-import json
 import logging
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-from contextlib import asynccontextmanager
-from collections import defaultdict
-
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from pydantic import BaseModel
-import redis.asyncio as redis
-from sqlalchemy.orm import Session
-
-from db import get_db_pool, Workflow, SessionLocal
-from orchestrator import Orchestrator
-from models import WorkflowRequest, ActionResult, WorkflowResult
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Test basic imports
+try:
+    from fastapi import FastAPI
+    logger.info("✓ FastAPI imported")
+except Exception as e:
+    logger.error(f"✗ FastAPI import failed: {e}")
+    raise
+
+try:
+    from contextlib import asynccontextmanager
+    logger.info("✓ asynccontextmanager imported")
+except Exception as e:
+    logger.error(f"✗ asynccontextmanager import failed: {e}")
+    raise
+
+try:
+    from models import WorkflowRequest
+    logger.info("✓ models imported")
+except Exception as e:
+    logger.error(f"✗ models import failed: {e}")
+    raise
+
+try:
+    from db import get_db_pool
+    logger.info("✓ db imported")
+except Exception as e:
+    logger.error(f"✗ db import failed: {e}")
+    raise
+
+try:
+    from orchestrator import Orchestrator
+    logger.info("✓ orchestrator imported")
+except Exception as e:
+    logger.error(f"✗ orchestrator import failed: {e}")
+    raise
+
+from datetime import datetime
+from typing import Dict, Any, List
+from collections import defaultdict
+
+import redis.asyncio as redis
+from fastapi import HTTPException, BackgroundTasks
 
 redis_client = None
 dlq_fallback = defaultdict(dict)
@@ -24,6 +53,7 @@ dlq_fallback = defaultdict(dict)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_client
+    logger.info("App starting...")
     try:
         redis_url = os.getenv("REDIS_URL")
         if redis_url:
@@ -33,11 +63,11 @@ async def lifespan(app: FastAPI):
                 socket_keepalive=True
             )
             await redis_client.ping()
-            logger.info("Redis connected")
+            logger.info("✓ Redis connected")
         else:
-            logger.info("Redis not configured, using in-memory DLQ")
+            logger.info("✓ Redis not configured, using in-memory DLQ")
     except Exception as e:
-        logger.warning(f"Redis unavailable: {e}, using in-memory fallback")
+        logger.warning(f"⚠ Redis unavailable: {e}, using in-memory fallback")
         redis_client = None
     
     yield
@@ -49,6 +79,11 @@ async def lifespan(app: FastAPI):
             pass
 
 app = FastAPI(title="Automation Hub", lifespan=lifespan)
+logger.info("✓ FastAPI app created")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 @app.post("/orchestrate")
 async def orchestrate(request: WorkflowRequest, background_tasks: BackgroundTasks):
@@ -128,10 +163,9 @@ async def retry_dlq_item(item_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(orchestrator.retry_dlq_item, item_id, item_data)
     return {"message": f"Retry queued for {item_id}"}
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8090")))
+    logger.info("Starting uvicorn...")
+    port = int(os.getenv("PORT", "8090"))
+    logger.info(f"Listening on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
