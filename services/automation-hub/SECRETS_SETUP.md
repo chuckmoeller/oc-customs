@@ -17,7 +17,7 @@ gcloud secrets create smtp-user --replication-policy="automatic" \
   --data-file=- <<< "chuck@madisonenergygroup.com"
 
 gcloud secrets create smtp-password --replication-policy="automatic" \
-  --data-file=- <<< "your-gmail-app-password"
+  --data-file=- <<< "your-outlook-password"
 
 gcloud secrets create slack-bot-token --replication-policy="automatic" \
   --data-file=- <<< "xoxb-your-slack-token"
@@ -49,8 +49,10 @@ Repeat for all secrets.
 For local development, set environment variables instead:
 
 ```bash
+export SMTP_HOST="smtp.office365.com"
+export SMTP_PORT=587
 export SMTP_USER="chuck@madisonenergygroup.com"
-export SMTP_PASSWORD="your-gmail-app-password"
+export SMTP_PASSWORD="your-outlook-password"
 export SLACK_BOT_TOKEN="xoxb-your-slack-token"
 export ASANA_PAT="your-asana-pat"
 export ANTHROPIC_API_KEY="sk-ant-your-key"
@@ -59,6 +61,13 @@ export GCP_PROJECT_ID="first-project-db-81b5e"
 ```
 
 The `secrets.py` module checks environment variables first, then falls back to Secret Manager.
+
+## Outlook/Office 365 Configuration
+
+The automation-hub is configured to use Outlook SMTP:
+- **Host**: smtp.office365.com
+- **Port**: 587
+- **Auth**: Your Office 365 email (chuck@madisonenergygroup.com) and password
 
 ## Cloud Run Deployment
 
@@ -72,11 +81,3 @@ gcloud run deploy automation-hub \
   --region us-central1 \
   --set-env-vars GCP_PROJECT_ID=first-project-db-81b5e
 ```
-
-## Gmail App Passwords
-
-To use Gmail SMTP, generate an app password:
-1. Go to https://myaccount.google.com/security
-2. Enable 2-Step Verification
-3. Create App Passwords → Select Mail → Select Device
-4. Use the 16-character password as SMTP_PASSWORD
