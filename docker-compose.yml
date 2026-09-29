@@ -143,30 +143,30 @@ services:
     networks:
       - stack-net
 
-    automation-hub:
-      build:
-        context: ./services/automation-hub
-        dockerfile: Dockerfile
-      container_name: automation-hub
-      restart: always
-      ports:
-        - "8090:8090"
-      environment:
-        - REDIS_URL=redis://redis:6379/0
-        - DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/automation_hub
-        - SMTP_USER=${SMTP_USER}
-        - SMTP_PASSWORD=${SMTP_PASSWORD}
-        - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
-        - ASANA_PAT=${ASANA_PAT}
-        - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-        - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      depends_on:
-        postgres:
-          condition: service_healthy
-        redis:
-          condition: service_healthy
-      networks:
-        - stack-net
+  automation-hub:
+    build:
+      context: ./services/automation-hub
+      dockerfile: Dockerfile
+    container_name: automation-hub
+    restart: always
+    ports:
+      - "8090:8090"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/automation_hub
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - ASANA_PAT=${ASANA_PAT}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - stack-net
   
 volumes:
   redis_data:
