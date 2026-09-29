@@ -22,14 +22,34 @@ redis_client = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_client
-    redis_client = await redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    try:
+        redis_client = await redis.from_url(
+            os.getenv("REDIS_URL", "redis://redis:6379/0"),
+            socket_connect_timeout=5,
+            socket_keepalive=True
+        )
+        # Test connection with short timeout
+        await redis_client.ping()
+        logger.info("Redis connected")
+    except Exception as e:
+        logger.warning(f"Redis connection failed (non-blocking): {e}")
+        redis_client = None
+    
     yield
-    await redis_client.close()
+    
+    if redis_client:
+        try:
+            await redis_client.close()
+        except:
+            pass
 
 app = FastAPI(title="Automation Hub", lifespan=lifespan)
 
 @app.post("/orchestrate")
 async def orchestrate(request: WorkflowRequest, background_tasks: BackgroundTasks):
+    if not redis_client:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    
     db_pool = await get_db_pool()
     orchestrator = Orchestrator(db_pool, redis_client)
 
@@ -69,6 +89,9 @@ async def get_workflow_status(workflow_id: str):
 
 @app.get("/dlq")
 async def list_dlq_items(limit: int = 100):
+    if not redis_client:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    
     dlq_items = await redis_client.zrange("dlq:failed_actions", 0, limit - 1, withscores=True)
 
     items = []
@@ -84,6 +107,9 @@ async def list_dlq_items(limit: int = 100):
 
 @app.post("/dlq/{item_id}/retry")
 async def retry_dlq_item(item_id: str, background_tasks: BackgroundTasks):
+    if not redis_client:
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    
     db_pool = await get_db_pool()
     orchestrator = Orchestrator(db_pool, redis_client)
 
