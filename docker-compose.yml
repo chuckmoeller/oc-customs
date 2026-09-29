@@ -95,6 +95,45 @@ services:
     command: uvicorn server:app --host 0.0.0.0 --port 8080
     ports:
       - "8080:8080"
+    fieldy-webhook:
+      build:
+        context: .
+        dockerfile: Dockerfile.fieldy-webhook
+      container_name: fieldy-webhook
+      restart: always
+      ports:
+        - "8003:8003"
+      env_file:
+        - .env
+      environment:
+        - FIELDY_API_KEY=${FIELDY_API_KEY}
+        - REDIS_URL=redis://redis:6379/0
+        - REDIS_PASSWORD=${REDIS_PASSWORD}
+        - LOG_LEVEL=INFO
+      depends_on:
+        redis:
+          condition: service_healthy
+      networks:
+        - stack-net
+
+    outlook-tasks-worker:
+      build:
+        context: .
+        dockerfile: Dockerfile.outlook-worker
+      container_name: outlook-tasks-worker
+      restart: always
+      env_file:
+        - .env
+      environment:
+        - MICROSOFT_GRAPH_TOKEN=${MICROSOFT_GRAPH_TOKEN}
+        - REDIS_URL=redis://redis:6379/0
+        - REDIS_PASSWORD=${REDIS_PASSWORD}
+        - LOG_LEVEL=INFO
+      depends_on:
+        redis:
+          condition: service_healthy
+      networks:
+        - stack-net
     volumes:
       - ./secrets/gcp-key.json:/app/secrets/gcp-key.json:ro
       - ./storage/photos:/app/storage/photos
