@@ -1,0 +1,6 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements-outlook.txt ./
+RUN pip install --no-cache-dir -r requirements-outlook.txt
+COPY fieldy-integration-worker.py outlook-tasks-worker.py ./
+CMD ["python3", "outlook_tasks_worker.py"]

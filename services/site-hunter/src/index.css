@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Native mobile feel */
+html, body {
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #0F1419;
+  color: #f3f4f6;
+}
+
+/* PWA standalone: account for status bar and home indicator */
+@media all and (display-mode: standalone) {
+  body {
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+
+/* Smooth momentum scrolling on iOS */
+.scroll-native {
+  -webkit-overflow-scrolling: touch;
+  overflow-y: auto;
+}
+
+/* Remove input zoom on iOS (font-size must be >= 16px) */
+input, select, textarea {
+  font-size: 16px !important;
+}
+
+/* Remove default button outlines on mobile but keep focus ring */
+button:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Export celebration animations */
+@keyframes confetti {
+  0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(300px) rotate(720deg); opacity: 0; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}

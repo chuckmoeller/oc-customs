@@ -1,0 +1,220 @@
+services:
+  # Standard Relational & Document Store (JSONB support)
+  postgres:
+    image: postgres:17-alpine
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: madison_user
+      POSTGRES_PASSWORD: secure_db_password
+      POSTGRES_DB: madison_stack
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - stack-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U madison_user -d madison_stack"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Transport Bus & Idempotency Store
+  redis:
+    image: redis:alpine
+    container_name: redis_broker
+    restart: always
+    command: redis-server --save 60 1 --appendonly yes --loglevel warning
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - stack-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Ingestion Webhook Gateway (Agent Zero Fast-Path)
+  fastapi-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    container_name: fastapi-gateway
+    restart: always
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://madison_user:secure_db_password@postgres:5432/madison_stack
+      - GROQ_API_KEY=
+      - TIER0_GROQ_MODEL=
+      - OPENROUTER_API_KEY=
+      - TIER0_OPENROUTER_MODEL=
+      - OPENROUTER_BASE_URL=
+      - OPENAI_COMPATIBLE_BASE_URL=
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - stack-net
+
+  # Madison Energy Group CRM
+  madison-crm:
+    build:
+      context: ./services/madison-crm
+      dockerfile: Dockerfile
+    container_name: madison-crm
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://madison_user:secure_db_password@postgres:5432/madison_stack
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - stack-net
+
+  # Site Hunter Vision & Nameplate OCR
+  site-hunter:
+    build:
+      context: ./services/site-hunter
+      dockerfile: Dockerfile
+    container_name: site-hunter
+    restart: always
+    command: uvicorn server:app --host 0.0.0.0 --port 8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./secrets/gcp-key.json:/app/secrets/gcp-key.json:ro
+      - ./storage/photos:/app/storage/photos
+      - ./services/site-hunter/app.py:/app/server.py
+      - ./app:/app/app
+      - ./api:/app/api
+      - ./services/site-hunter/dist:/app/dist
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/site_hunter
+      - SITE_HUNTER_DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/site_hunter
+      - CALIBRATOR_DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/calibrator
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/gcp-key.json
+      - GCP_PROJECT_ID=first-project-db-81b5e
+      - ASANA_SECRET_ID=asana-access-token
+      - ASANA_PROJECT_ID=1216953065117558
+      - ANTHROPIC_API_KEY=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
+      - ASANA_PAT=2/1216825739807789/1216879790464104:e0c3a80ab507de26c124f3fcccd4a3e9
+      - ASANA_WORKSPACE_GID=1216597955100528
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - stack-net
+
+  # Giveback Gardening Spatial Permaculture Planner
+  giveback-gardening:
+    build:
+      context: ./services/giveback-gardening
+      dockerfile: Dockerfile
+    container_name: giveback-gardening
+    restart: always
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - DATABASE_URL=postgresql://madison_user:secure_db_password@postgres:5432/madison_stack
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - stack-net
+
+  # The Calibrator (EnergyPlus Background Worker)
+  calibrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.calibrator
+    container_name: calibrator
+    restart: always
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./workers.py:/app/workers.py
+      - ./app:/app/app
+      - ./storage/photos:/app/storage/photos
+      - ./secrets/gcp-key.json:/app/secrets/gcp-key.json:ro
+      - ./services/hvac_taxonomy_bridge:/home/opc/stack/services/hvac_taxonomy_bridge
+      - ./services/calibrator:/home/opc/stack/services/calibrator
+      - ./services/hvac_taxonomy_bridge:/app/services/hvac_taxonomy_bridge
+      - ./services/calibrator:/app/services/calibrator
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/site_hunter
+      - SITE_HUNTER_DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/site_hunter
+      - CALIBRATOR_DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/calibrator
+      - PYTHONPATH=/app:/app/services/hvac_taxonomy_bridge/src:/app/services/calibrator/src:/home/opc/stack/services/hvac_taxonomy_bridge/src:/home/opc/stack/services/calibrator/src
+      - EVENT_STREAM_NAME=events:calibrator
+      - EVENT_GROUP_NAME=calibrator_group
+      - WORKER_CONSUMER_ID=calibrator-worker-1
+      - HEALTH_PORT=8001
+      - ASANA_PAT=2/1216825739807789/1216879790464104:e0c3a80ab507de26c124f3fcccd4a3e9
+      - ASANA_WORKSPACE_GID=1216597955100528
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/gcp-key.json
+      - GCP_PROJECT_ID=first-project-db-81b5e
+      - ASANA_SECRET_ID=asana-access-token
+      - GROQ_API_KEY=
+      - TIER0_GROQ_MODEL=
+      - OPENROUTER_API_KEY=
+      - TIER0_OPENROUTER_MODEL=
+      - OPENROUTER_BASE_URL=
+      - OPENAI_COMPATIBLE_BASE_URL=
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - stack-net
+
+  # Spec Hunter Nameplate & Spec Extraction Engine
+  spec-hunter:
+    build:
+      context: ./services/spec-hunter
+      dockerfile: Dockerfile
+    container_name: spec-hunter
+    restart: always
+    ports:
+      - "8082:8082"
+    environment:
+      - PORT=8082
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://madison_user:secure_db_password@postgres:5432/madison_stack
+      - OPENAI_COMPATIBLE_BASE_URL=
+      - OPENAI_COMPATIBLE_API_KEY=
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - stack-net
+
+volumes:
+  redis_data:
+  postgres_data:
+
+networks:
+  stack-net:
+    driver: bridge

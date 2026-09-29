@@ -1,0 +1,28 @@
+HVAC Taxonomy Bridge
+Copyright 2026 Chuck Moeller
+
+This product incorporates schema and ontology definitions derived from
+ASHRAE Standard 205, "Representation of Performance Data for HVAC&R and
+Other Facility Equipment."
+
+  Source:  https://github.com/open205/schema-205
+  License: Apache License, Version 2.0
+  Copyright 2016 ASHRAE
+
+ASHRAE has adopted the Apache License, Version 2.0 for use of files
+available at https://data.ashrae.org, which includes the above schema
+source.
+
+Modified files, per Section 4(b):
+
+  The files under `vendored/ashrae_205_schema/` are compiled JSON
+  Schema files, machine-generated from schema-205's
+  `schema-source/*.schema.yaml` sources using that package's own
+  `schema205.json_translate` tool. They are not distributed by
+  schema-205 in this compiled form. See
+  `vendored/ashrae_205_schema/PROVENANCE.md` for exact source
+  tag/commit and regeneration instructions.
+
+This NOTICE file is provided for informational purposes only, per
+Section 4(d) of the Apache License, Version 2.0, and does not modify
+the License.

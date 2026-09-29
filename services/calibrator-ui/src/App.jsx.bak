@@ -1,0 +1,427 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { 
+  Zap, 
+  Leaf, 
+  Building, 
+  Lock, 
+  UploadCloud, 
+  FileSpreadsheet, 
+  ArrowLeft, 
+  CheckCircle2, 
+  AlertCircle, 
+  RefreshCw, 
+  Loader2 
+} from 'lucide-react';
+
+export default function App() {
+  const [view, setView] = useState('dashboard');
+  const [jobs, setJobs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [selectedJobId, setSelectedJobId] = useState(null);
+
+  // Upload View state
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState(null);
+  const [uploadError, setUploadError] = useState(null);
+  const fileInputRef = useRef(null);
+
+  // 1. Fetch completed simulations from /api/calibrator/jobs
+  const fetchJobs = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/calibrator/jobs');
+      if (!res.ok) {
+        throw new Error(`Failed to load simulations (HTTP ${res.status})`);
+      }
+      const rawData = await res.json();
+      const jobList = Array.isArray(rawData) ? rawData : (rawData.jobs || []);
+      setJobs(jobList);
+
+      if (jobList.length > 0) {
+        setSelectedJobId((currentId) => {
+          const exists = jobList.find((j) => j.id === currentId);
+          if (exists) return currentId;
+          // Prefer completed job, fallback to first in list
+          const completed = jobList.find((j) => j.status === 'completed');
+          return (completed || jobList[0]).id;
+        });
+      }
+    } catch (err) {
+      console.error('Error fetching calibrator jobs:', err);
+      setError(err.message || 'Unable to fetch simulation records');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchJobs();
+  }, []);
+
+  // 2. Active Job Data Mapping
+  const activeJob = jobs.find((j) => j.id === selectedJobId) || jobs[0] || null;
+
+  const data = {
+    name: activeJob?.name || "Wayfinder Waikiki Calibration",
+    status: activeJob?.status || "completed",
+    baseline_kwh: Number(activeJob?.baseline_kwh || 0),
+    proposed_kwh: Number(activeJob?.proposed_kwh || 0),
+    savings_dollars: Number(activeJob?.annual_savings_dollars || 0),
+    savings_kwh: Number(activeJob?.annual_savings_kwh || 0),
+    tonnage: Number(
+      activeJob?.equipment_summary?.total_tonnage ?? 
+      activeJob?.simulation_parameters?.total_tonnage ?? 
+      0
+    ),
+    devices: Number(
+      activeJob?.equipment_summary?.device_count ?? 
+      activeJob?.equipment_summary?.mapped_count ?? 
+      0
+    ),
+    archetype: activeJob?.prototype_archetype || activeJob?.building_type || "Large Hotel (ASHRAE 90.1-2019)",
+    climate_zone: activeJob?.climate_zone || "3A",
+  };
+
+  const chartData = [
+    { name: 'Current Baseline', kwh: data.baseline_kwh, color: '#94a3b8' },
+    { name: 'Proposed ECM', kwh: data.proposed_kwh, color: '#10b981' }
+  ];
+
+  const formatCurrency = (val) => 
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(val || 0);
+
+  const formatNumber = (val) => 
+    new Intl.NumberFormat('en-US').format(Math.round(val || 0));
+
+  // 3. File Upload Handler for .xlsx Submission Forms
+  const handleUploadFile = async (file) => {
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith('.xlsx')) {
+      setUploadError("Invalid file type. Please upload an Excel workbook (.xlsx).");
+      return;
+    }
+
+    setUploading(true);
+    setUploadError(null);
+    setUploadSuccess(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.detail || errJson.error || `Upload failed (HTTP ${res.status})`);
+      }
+
+      const resData = await res.json();
+      setUploadSuccess({
+        filename: file.name,
+        size: file.size,
+        path: resData.path || resData.url,
+      });
+
+      // Refetch simulations in background to discover any newly ingested tasks
+      await fetchJobs();
+    } catch (err) {
+      console.error('File upload error:', err);
+      setUploadError(err.message || 'Failed to upload spreadsheet to server.');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleUploadFile(e.dataTransfer.files[0]);
+    }
+  };
+
+  // =========================================================================
+  // VIEW: Upload View
+  // =========================================================================
+  if (view === 'upload') {
+    return (
+      <div className="min-h-screen bg-slate-50 p-6 md:p-12 font-sans text-slate-800 flex items-center justify-center">
+        <div className="max-w-2xl w-full bg-white rounded-2xl shadow-sm border border-slate-100 p-8">
+          <button 
+            onClick={() => {
+              setUploadError(null);
+              setUploadSuccess(null);
+              setView('dashboard');
+            }} 
+            className="flex items-center text-sm text-slate-500 hover:text-slate-800 mb-8 transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4 mr-2" /> Back to Dashboard
+          </button>
+          
+          <div className="text-center mb-8">
+            <h2 className="text-2xl font-bold text-slate-900">Upload External Job</h2>
+            <p className="text-slate-500 mt-2">
+              Drag and drop a completed Submission Form (.xlsx) to run an EnergyPlus simulation.
+            </p>
+          </div>
+
+          {/* Hidden File Input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length > 0) {
+                handleUploadFile(e.target.files[0]);
+              }
+            }}
+          />
+
+          {/* Drag & Drop Zone */}
+          <div 
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => !uploading && fileInputRef.current?.click()}
+            className={`border-2 border-dashed rounded-xl p-12 text-center transition-all cursor-pointer group ${
+              isDragging 
+                ? 'border-emerald-500 bg-emerald-50/50' 
+                : 'border-slate-200 hover:bg-slate-50 hover:border-emerald-300'
+            } ${uploading ? 'opacity-70 pointer-events-none' : ''}`}
+          >
+            {uploading ? (
+              <div className="py-4">
+                <Loader2 className="w-12 h-12 text-emerald-500 mx-auto mb-4 animate-spin" />
+                <p className="font-semibold text-slate-800">Uploading Submission Form...</p>
+                <p className="text-xs text-slate-400 mt-1">Transmitting file to `/api/upload`</p>
+              </div>
+            ) : (
+              <>
+                <UploadCloud className="w-12 h-12 text-slate-300 group-hover:text-emerald-500 mx-auto mb-4 transition-colors" />
+                <p className="font-medium text-slate-700">Drop your Excel file here, or click to browse</p>
+                <p className="text-xs text-slate-400 mt-2">Supports .xlsx (Submission Form Template)</p>
+              </>
+            )}
+          </div>
+
+          {/* Upload Status Alerts */}
+          {uploadSuccess && (
+            <div className="mt-6 p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3">
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 mt-0.5 shrink-0" />
+              <div className="text-sm">
+                <p className="font-semibold text-emerald-900">Upload Successful!</p>
+                <p className="text-emerald-700 mt-0.5">
+                  Saved <strong>{uploadSuccess.filename}</strong> ({(uploadSuccess.size / 1024).toFixed(1)} KB)
+                </p>
+                <button
+                  onClick={() => setView('dashboard')}
+                  className="mt-3 inline-flex items-center text-xs font-semibold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+                >
+                  Return to Dashboard →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {uploadError && (
+            <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-600 mt-0.5 shrink-0" />
+              <div className="text-sm">
+                <p className="font-semibold text-red-900">Upload Failed</p>
+                <p className="text-red-700 mt-0.5">{uploadError}</p>
+              </div>
+            </div>
+          )}
+
+          <div className="mt-8 bg-slate-50 p-4 rounded-lg flex items-start">
+            <FileSpreadsheet className="w-5 h-5 text-slate-400 mr-3 mt-0.5 shrink-0" />
+            <p className="text-sm text-slate-600">
+              Ensure the external equipment list maps tonnage, make, and model accurately before uploading. The system will map inputs via the taxonomy bridge.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // =========================================================================
+  // VIEW: Dashboard View
+  // =========================================================================
+  return (
+    <div className="min-h-screen bg-slate-50 p-6 md:p-12 font-sans text-slate-800">
+      <div className="max-w-4xl mx-auto space-y-8">
+        
+        {/* Top Header Card with Job Selector */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-100 gap-4">
+          <div className="text-left space-y-1.5">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <h1 className="text-2xl font-bold text-slate-900">{data.name}</h1>
+              {data.status && (
+                <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                  data.status === 'completed'
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {data.status}
+                </span>
+              )}
+            </div>
+            <p className="text-slate-500 uppercase tracking-widest text-xs font-semibold">
+              Calibrated Energy Model Summary
+            </p>
+
+            {/* Dropdown Selector for Simulations */}
+            {jobs.length > 0 && (
+              <div className="pt-2 flex items-center gap-2 flex-wrap">
+                <label htmlFor="sim-select" className="text-xs font-medium text-slate-400">
+                  Select Simulation:
+                </label>
+                <select
+                  id="sim-select"
+                  value={selectedJobId || (jobs[0]?.id || '')}
+                  onChange={(e) => setSelectedJobId(e.target.value)}
+                  className="bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-800 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500 font-medium cursor-pointer transition-colors"
+                >
+                  {jobs.map((j) => (
+                    <option key={j.id} value={j.id}>
+                      {j.name || `Simulation ${j.id.slice(0, 8)}`} {j.annual_savings_dollars ? `— ${formatCurrency(j.annual_savings_dollars)}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={fetchJobs}
+                  disabled={loading}
+                  title="Refresh simulation records from database"
+                  className="p-1 text-slate-400 hover:text-slate-600 rounded-md transition-colors"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-emerald-500' : ''}`} />
+                </button>
+              </div>
+            )}
+
+            {error && (
+              <p className="text-xs text-amber-600 pt-1 flex items-center gap-1">
+                <AlertCircle className="w-3.5 h-3.5 inline" /> Using cached/fallback view: {error}
+              </p>
+            )}
+          </div>
+
+          <button 
+            onClick={() => {
+              setUploadError(null);
+              setUploadSuccess(null);
+              setView('upload');
+            }} 
+            className="inline-flex items-center bg-emerald-500 hover:bg-emerald-600 text-white font-medium px-4 py-2.5 rounded-xl transition-colors text-sm shadow-sm shrink-0 cursor-pointer"
+          >
+            <UploadCloud className="w-4 h-4 mr-2" /> New External Job
+          </button>
+        </div>
+
+        {/* Projected Annual Savings Banner */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-8 text-center">
+          <h2 className="text-slate-500 font-medium mb-2">Projected Annual Savings</h2>
+          <div className="text-6xl font-black text-emerald-500 tracking-tight">
+            {formatCurrency(data.savings_dollars)}
+          </div>
+          <p className="text-slate-400 mt-4 text-sm">
+            Based on {formatNumber(data.savings_kwh)} kWh overall site reduction
+          </p>
+        </div>
+
+        {/* Grid: Energy Chart & Site Profile */}
+        <div className="grid md:grid-cols-2 gap-6">
+          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 h-80 flex flex-col">
+            <h3 className="font-semibold text-slate-700 mb-6 flex items-center">
+              <Zap className="w-5 h-5 mr-2 text-amber-500"/> Energy Consumption (kWh)
+            </h3>
+            <div className="flex-grow">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData} margin={{top: 0, right: 0, left: 0, bottom: 0}}>
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#64748b', fontSize: 12}} />
+                  <Tooltip 
+                    cursor={{fill: 'transparent'}} 
+                    formatter={(value) => formatNumber(value) + " kWh"}
+                  />
+                  <Bar dataKey="kwh" radius={[4, 4, 0, 0]} maxBarSize={80}>
+                    {chartData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+              <h3 className="font-semibold text-slate-700 mb-4 flex items-center">
+                <Building className="w-5 h-5 mr-2 text-blue-500"/> Site Profile
+              </h3>
+              <ul className="space-y-3 text-sm text-slate-600">
+                <li className="flex justify-between border-b border-slate-100 pb-2">
+                  <span>Equipment Analyzed</span> 
+                  <span className="font-semibold text-slate-900">{data.devices} Units</span>
+                </li>
+                <li className="flex justify-between border-b border-slate-100 pb-2">
+                  <span>Total Cooling Load</span> 
+                  <span className="font-semibold text-slate-900">{data.tonnage.toFixed(1)} Tons</span>
+                </li>
+                <li className="flex justify-between pb-1">
+                  <span>DOE Archetype</span> 
+                  <span className="font-semibold text-slate-900 text-right truncate max-w-[220px]" title={data.archetype}>
+                    {data.archetype}
+                  </span>
+                </li>
+              </ul>
+            </div>
+
+            <div className="bg-emerald-50/50 p-6 rounded-2xl border border-emerald-100">
+              <h3 className="font-semibold text-emerald-800 mb-2 flex items-center">
+                <Leaf className="w-5 h-5 mr-2 text-emerald-600"/> Environmental Impact
+              </h3>
+              <p className="text-sm text-emerald-700 leading-relaxed">
+                Equivalent to removing <strong>{Math.max(1, Math.round(data.savings_kwh * 0.000709 * 1.1))} cars</strong> from the road.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Action Button */}
+        <div className="pt-4 text-center">
+          <button 
+            disabled 
+            className="inline-flex items-center justify-center bg-slate-100 text-slate-400 font-medium px-8 py-4 rounded-xl cursor-not-allowed border border-slate-200 w-full md:w-auto shadow-sm"
+          >
+            <Lock className="w-5 h-5 mr-2" />
+            Generate Full Engineering Report
+          </button>
+        </div>
+
+      </div>
+    </div>
+  );
+}
