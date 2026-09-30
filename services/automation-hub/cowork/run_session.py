@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import argparse
 import requests
 from anthropic import Anthropic
 from dotenv import load_dotenv
@@ -42,8 +43,20 @@ def call_tool(name, tool_input):
         return f"Error calling {name}: {e}"
 
 
+def get_task():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--file", help="Read the task/instruction text from this file")
+    args, remainder = parser.parse_known_args()
+
+    if args.file:
+        with open(args.file, "r", encoding="utf-8") as f:
+            return f.read()
+
+    return " ".join(remainder) or input("What should the automation hub do? ")
+
+
 def main():
-    task = " ".join(sys.argv[1:]) or input("What should the automation hub do? ")
+    task = get_task()
 
     session = client.beta.sessions.create(
         agent={"type": "agent", "id": AGENT_ID, "version": AGENT_VERSION},

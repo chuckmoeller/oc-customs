@@ -27,6 +27,12 @@ are already in `.env`. To push agent changes (new system prompt, new tool), use
 python run_session.py "Send a follow-up email to john@acme.com about today's call, post a summary in #deals, and create an Asana task for next steps"
 ```
 
+Or read the task from a file (avoids shell quoting issues with long/multi-line text):
+
+```bash
+python run_session.py --file task.txt
+```
+
 Or with no argument, it will prompt interactively.
 
 The script:
@@ -45,14 +51,37 @@ The script:
 - `AGENT_ID` / `AGENT_VERSION` / `ENVIRONMENT_ID` — written by `setup.py`, read
   by `run_session.py`
 
-## Wiring in Fieldy context
+## Fieldy integration (bridge pattern)
 
-This orchestrator does not call Fieldy directly. Pass Fieldy transcript/context
-in the task text you give `run_session.py`, e.g.:
+The Managed Agent has no direct connection to Fieldy — Fieldy's MCP server isn't
+a locally-configured process with a discoverable URL, so it can't be added
+directly to the agent's `mcp_servers`. Instead, Fieldy transcripts are fetched
+by Claude Code (which has `mcp__fieldy__*` tools via a connected app) and handed
+to `run_session.py` as the task input.
 
-```bash
-python run_session.py "Here is the transcript from today's call with John Doe: [paste transcript]. Send a follow-up email and log the deal."
-```
+**Workflow** (ask Claude Code to do this — it's not a script you run yourself):
 
-A future iteration could fetch the transcript automatically via the Fieldy MCP
-tools before starting the session.
+1. Say something like: *"Follow up on today's call with John — send an email,
+   post to #deals, and create an Asana task."*
+2. Claude Code uses `fieldy_search_conversations` / `fieldy_browse_conversations`
+   to find the matching conversation, then `fieldy_get_conversation` to fetch
+   the full transcript.
+3. Claude Code writes the transcript + your instruction to a task file and runs:
+   ```bash
+   python run_session.py --file /path/to/task.txt
+   ```
+4. The Cowork agent executes the workflow and reports back.
+
+This means you never paste a transcript — you just describe what you want in
+terms of who/when/what, and Claude Code does the fetch-and-kick-off for you.
+
+**Requires:** at least one recorded Fieldy conversation. As of 2026-09-29 this
+account (free tier, 7-day history window) has zero recorded conversations —
+`fieldy_search_conversations` returns `earliestConversationAt: null`. Record a
+call/meeting with Fieldy first, then this flow works end-to-end.
+
+**If you want it fully server-side** (agent calls Fieldy directly, no Claude Code
+in the loop): find Fieldy's MCP server URL and an API key or OAuth credential in
+Fieldy's account/developer settings, then it can be added to the agent's
+`mcp_servers` + a vault credential — ask to have this wired up once you have
+those details.
