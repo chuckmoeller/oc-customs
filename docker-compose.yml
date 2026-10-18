@@ -1,4 +1,4 @@
-services:
+﻿services:
   postgres:
     image: postgres:17-alpine
     container_name: postgres_db
@@ -8,14 +8,14 @@ services:
       POSTGRES_PASSWORD: secure_db_password
       POSTGRES_DB: madison_stack
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - stack-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U madison_user"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U madison_user -d postgres"]
+      interval: 10s
       timeout: 3s
       retries: 5
 
@@ -25,7 +25,7 @@ services:
     restart: always
     command: redis-server --save 60 1 --appendonly yes
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -43,11 +43,9 @@ services:
     container_name: madison-crm
     restart: always
     ports:
-      - "3000:3000"
-    environment:
-      - PORT=3000
-      - NODE_ENV=production
-      - DATABASE_URL=postgresql://madison_user:secure_db_password@postgres:5432/madison_stack
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - ./services/madison-crm/.env.production
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,14 +56,19 @@ services:
     build:
       context: ./services/site-hunter
       dockerfile: Dockerfile
+      args:
+        - VITE_API_BASE_URL=${VITE_API_BASE_URL}
     container_name: site-hunter
     restart: always
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - PORT=8080
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/site_hunter
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ASANA_PAT=${ASANA_PAT}
+      - ENVIRONMENT=production
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,19 +81,36 @@ services:
     build:
       context: ./services/spec-hunter
       dockerfile: Dockerfile
+    image: stack-spec-hunter:latest
     container_name: spec-hunter
-    restart: always
+    restart: unless-stopped
     ports:
-      - "8082:8082"
+      - "127.0.0.1:8082:8082"
     environment:
       - PORT=8082
       - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql://madison_user:secure_db_password@postgres:5432/madison_stack
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - DATABASE_URL=postgresql://madison_user:secure_db_password@postgres:5432/hvac_specs
+      - DECODER_API_URL=http://model-decoder-api:8080/v1/decode
+      - DECODER_API_KEY=test_dev_key
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8082/health\")' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - stack-net
+  model-decoder-api:
+    build:
+      context: ./services/model-decoder-api
+      dockerfile: Dockerfile
+    container_name: model-decoder-api
+    restart: always
+    ports:
+      - "127.0.0.1:8083:8080"
+    environment:
+      - PORT=8080
+      - ENVIRONMENT=production
     networks:
       - stack-net
 
@@ -101,12 +121,49 @@ services:
     container_name: giveback-gardening
     restart: always
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
     environment:
       - PORT=3001
       - DATABASE_URL=postgresql://madison_user:secure_db_password@postgres:5432/madison_stack
     depends_on:
       postgres:
+        condition: service_healthy
+    networks:
+      - stack-net
+
+  calibrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.calibrator
+    container_name: calibrator
+    restart: always
+    ports:
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - ./workers.py:/app/workers.py
+      - ./app:/app/app
+      - ./storage/photos:/app/storage/photos
+      - ./services/hvac_taxonomy_bridge:/app/services/hvac_taxonomy_bridge
+      - ./services/calibrator:/app/services/calibrator
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/site_hunter
+      - SITE_HUNTER_DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/site_hunter
+      - CALIBRATOR_DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/calibrator
+      - HVAC_SPECS_DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/hvac_specs
+      - PYTHONPATH=/app:/app/services/hvac_taxonomy_bridge/src:/app/services/calibrator/src
+      - EVENT_STREAM_NAME=events:calibrator
+      - EVENT_GROUP_NAME=calibrator_group
+      - WORKER_CONSUMER_ID=calibrator-worker-1
+      - HEALTH_PORT=8001
+      - ASANA_PAT=${ASANA_PAT}
+      - ASANA_WORKSPACE_GID=1216597955100528
+      - GCP_PROJECT_ID=first-project-db-81b5e
+      - GOOGLE_CLOUD_PROJECT=first-project-db-81b5e
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - stack-net
@@ -135,10 +192,26 @@ services:
       dockerfile: Dockerfile
     container_name: fieldy-worker
     restart: always
+    ports:
+      - "127.0.0.1:8085:8080"
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/adc.json
+      - GCP_PROJECT_ID=first-project-db-81b5e
+      - GOOGLE_CLOUD_PROJECT=first-project-db-81b5e
+      - AZURE_TENANT_ID=8e1ff403-d237-4c6e-8571-a7ac3eb3a3fd
+      - AZURE_CLIENT_ID=1bc6fb60-c642-4afa-893e-88439dcbb2d4
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - USER_EMAIL=chuck@madisonenergygroup.com
+      - DATABASE_URL=postgresql://madison_user:secure_db_password@postgres:5432/site_hunter
+    volumes:
+      - ./secrets/adc.json:/app/secrets/adc.json:ro
+      - ./services/fieldy-orchestrator/fieldy-worker/agent:/app/agent:ro
+      - ./services/fieldy-orchestrator/fieldy-worker/main.py.container:/app/main.py:ro
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     networks:
       - stack-net
@@ -150,7 +223,7 @@ services:
     container_name: automation-hub
     restart: always
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     environment:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql+asyncpg://madison_user:secure_db_password@postgres:5432/automation_hub
@@ -168,6 +241,23 @@ services:
     networks:
       - stack-net
   
+  log-viewer:
+    image: amir20/dozzle:latest
+    container_name: log-viewer
+    restart: always
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data/dozzle/users.yml:/data/users.yml:ro
+    environment:
+      - DOZZLE_BASE=/logs
+      - DOZZLE_AUTH_PROVIDER=simple
+      - DOZZLE_NO_ANALYTICS=true
+      - DOZZLE_DISABLE_SETUP_WIZARD=true
+    networks:
+      - stack-net
+
 volumes:
   redis_data:
   postgres_data:
